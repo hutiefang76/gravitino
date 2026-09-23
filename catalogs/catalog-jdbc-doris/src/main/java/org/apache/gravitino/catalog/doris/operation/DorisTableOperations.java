@@ -20,6 +20,7 @@ package org.apache.gravitino.catalog.doris.operation;
 
 import static org.apache.gravitino.catalog.doris.DorisCatalog.DORIS_TABLE_PROPERTIES_META;
 import static org.apache.gravitino.catalog.doris.DorisTablePropertiesMetadata.DEFAULT_REPLICATION_FACTOR_IN_SERVER_SIDE;
+import static org.apache.gravitino.catalog.doris.DorisTablePropertiesMetadata.LIGHT_SCHEMA_CHANGE;
 import static org.apache.gravitino.catalog.doris.DorisTablePropertiesMetadata.REPLICATION_ALLOCATION;
 import static org.apache.gravitino.catalog.doris.DorisTablePropertiesMetadata.REPLICATION_FACTOR;
 import static org.apache.gravitino.catalog.doris.utils.DorisUtils.generatePartitionSqlFragment;
@@ -815,7 +816,12 @@ public class DorisTableOperations extends JdbcTableOperations {
         lazyLoadTable = getOrCreateTable(databaseName, tableName, lazyLoadTable);
         alterSql.add(addColumnFieldDefinition(addColumn, addColumnDorisVersion));
       } else if (change instanceof TableChange.RenameColumn) {
-        throw new IllegalArgumentException("Rename column is not supported yet");
+        if (changes.length != 1) {
+          throw new UnsupportedOperationException(
+              "Doris RENAME COLUMN must be a separate ALTER TABLE operation");
+        }
+        lazyLoadTable = getOrCreateTable(databaseName, tableName, lazyLoadTable);
+        alterSql.add(renameColumnDefinition((TableChange.RenameColumn) change, lazyLoadTable));
       } else if (change instanceof TableChange.UpdateColumnType) {
         lazyLoadTable = getOrCreateTable(databaseName, tableName, lazyLoadTable);
         TableChange.UpdateColumnType updateColumnType = (TableChange.UpdateColumnType) change;
@@ -1085,6 +1091,35 @@ public class DorisTableOperations extends JdbcTableOperations {
       }
     }
     return "DROP COLUMN " + BACK_QUOTE + col + BACK_QUOTE;
+  }
+
+  private String renameColumnDefinition(
+      TableChange.RenameColumn renameColumn, JdbcTable jdbcTable) {
+    if (renameColumn.fieldName().length != 1) {
+      throw new UnsupportedOperationException("Doris does not support nested column names.");
+    }
+    String oldName = renameColumn.fieldName()[0];
+    String newName = renameColumn.getNewName();
+    try {
+      getJdbcColumnFromTable(jdbcTable, oldName);
+    } catch (NoSuchColumnException e) {
+      throw new IllegalArgumentException("Original column does not exist: " + oldName, e);
+    }
+    if (Arrays.stream(jdbcTable.columns())
+        .anyMatch(column -> column.name().equalsIgnoreCase(newName))) {
+      throw new IllegalArgumentException("Column already exists: " + newName);
+    }
+    if (!Boolean.parseBoolean(jdbcTable.properties().get(LIGHT_SCHEMA_CHANGE))) {
+      throw new UnsupportedOperationException(
+          "Doris RENAME COLUMN requires the table property " + LIGHT_SCHEMA_CHANGE + "=true");
+    }
+    String version = getDorisVersion("RENAME COLUMN compatibility check");
+    if (!isVersionAtLeast(version, 1, 2, 0)) {
+      throw new UnsupportedOperationException(
+          "RENAME COLUMN requires Doris 1.2.0 or later. Current server version: " + version);
+    }
+    return String.format(
+        "RENAME COLUMN `%s` `%s`", oldName.replace("`", "``"), newName.replace("`", "``"));
   }
 
   private String updateColumnTypeFieldDefinition(

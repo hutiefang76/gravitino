@@ -18,6 +18,7 @@
  */
 package org.apache.gravitino.catalog.doris.operation;
 
+import static org.apache.gravitino.catalog.doris.DorisTablePropertiesMetadata.LIGHT_SCHEMA_CHANGE;
 import static org.apache.gravitino.catalog.doris.DorisTablePropertiesMetadata.REPLICATION_ALLOCATION;
 import static org.apache.gravitino.catalog.doris.DorisTablePropertiesMetadata.REPLICATION_FACTOR;
 import static org.apache.gravitino.rel.Column.DEFAULT_VALUE_NOT_SET;
@@ -55,6 +56,107 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 public class TestDorisTableOperationsSqlGeneration {
+
+  @Test
+  public void testRenameColumnGeneratesDorisSql() {
+    TestableDorisTableOperations ops = new TestableDorisTableOperations();
+    ops.setTableForAlter(tableWithRenameColumns(Map.of(LIGHT_SCHEMA_CHANGE, "true")));
+
+    Assertions.assertEquals(
+        "ALTER TABLE `test_table`\nRENAME COLUMN `old_name` `new_name`;",
+        ops.alterTableSql(
+            "test_table", TableChange.renameColumn(new String[] {"old_name"}, "new_name")));
+  }
+
+  @Test
+  public void testRenameColumnIsSupportedOnDorisOnePointTwoWithLightSchemaChange() {
+    TestableDorisTableOperations ops = new TestableDorisTableOperations("doris-1.2.2");
+    ops.setTableForAlter(tableWithRenameColumns(Map.of(LIGHT_SCHEMA_CHANGE, "true")));
+
+    Assertions.assertTrue(
+        ops.alterTableSql(
+                "test_table", TableChange.renameColumn(new String[] {"old_name"}, "new_name"))
+            .contains("RENAME COLUMN `old_name` `new_name`"));
+  }
+
+  @Test
+  public void testRenameColumnCannotShareAlterStatementWithOtherChanges() {
+    TestableDorisTableOperations ops = new TestableDorisTableOperations();
+    ops.setTableForAlter(tableWithRenameColumns(Map.of(LIGHT_SCHEMA_CHANGE, "true")));
+
+    UnsupportedOperationException error =
+        Assertions.assertThrows(
+            UnsupportedOperationException.class,
+            () ->
+                ops.alterTableSql(
+                    "test_table",
+                    TableChange.renameColumn(new String[] {"old_name"}, "new_name"),
+                    TableChange.updateColumnComment(new String[] {"taken"}, "comment")));
+    Assertions.assertTrue(error.getMessage().contains("separate ALTER TABLE"));
+  }
+
+  @Test
+  public void testRenameColumnRejectsMissingAndDuplicateNames() {
+    TestableDorisTableOperations ops = new TestableDorisTableOperations();
+    ops.setTableForAlter(tableWithRenameColumns(Map.of(LIGHT_SCHEMA_CHANGE, "true")));
+
+    IllegalArgumentException missing =
+        Assertions.assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                ops.alterTableSql(
+                    "test_table", TableChange.renameColumn(new String[] {"missing"}, "new_name")));
+    Assertions.assertTrue(missing.getMessage().contains("missing"));
+
+    IllegalArgumentException duplicate =
+        Assertions.assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                ops.alterTableSql(
+                    "test_table", TableChange.renameColumn(new String[] {"old_name"}, "taken")));
+    Assertions.assertTrue(duplicate.getMessage().contains("taken"));
+  }
+
+  @Test
+  public void testRenameColumnRequiresLightSchemaChange() {
+    TestableDorisTableOperations ops = new TestableDorisTableOperations();
+    ops.setTableForAlter(tableWithRenameColumns(Map.of()));
+
+    UnsupportedOperationException error =
+        Assertions.assertThrows(
+            UnsupportedOperationException.class,
+            () ->
+                ops.alterTableSql(
+                    "test_table", TableChange.renameColumn(new String[] {"old_name"}, "new_name")));
+    Assertions.assertTrue(error.getMessage().contains(LIGHT_SCHEMA_CHANGE));
+  }
+
+  @Test
+  public void testRenameColumnRejectsDorisBeforeVersionOnePointTwo() {
+    TestableDorisTableOperations ops = new TestableDorisTableOperations("doris-1.1.5");
+    ops.setTableForAlter(tableWithRenameColumns(Map.of(LIGHT_SCHEMA_CHANGE, "true")));
+
+    UnsupportedOperationException error =
+        Assertions.assertThrows(
+            UnsupportedOperationException.class,
+            () ->
+                ops.alterTableSql(
+                    "test_table", TableChange.renameColumn(new String[] {"old_name"}, "new_name")));
+    Assertions.assertTrue(error.getMessage().contains("1.2.0"));
+  }
+
+  private static JdbcTable tableWithRenameColumns(Map<String, String> properties) {
+    JdbcColumn oldColumn =
+        JdbcColumn.builder().withName("old_name").withType(Types.IntegerType.get()).build();
+    JdbcColumn takenColumn =
+        JdbcColumn.builder().withName("taken").withType(Types.IntegerType.get()).build();
+    return JdbcTable.builder()
+        .withName("test_table")
+        .withColumns(new JdbcColumn[] {oldColumn, takenColumn})
+        .withProperties(properties)
+        .withIndexes(Indexes.EMPTY_INDEXES)
+        .build();
+  }
 
   private static class TestableDorisTableOperations extends DorisTableOperations {
     private JdbcTable tableForAlter =

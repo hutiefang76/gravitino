@@ -20,6 +20,7 @@ package org.apache.gravitino.catalog.doris.integration.test;
 
 import static org.apache.gravitino.catalog.doris.DorisTablePropertiesMetadata.BLOOM_FILTER_COLUMNS;
 import static org.apache.gravitino.catalog.doris.DorisTablePropertiesMetadata.COMPRESSION;
+import static org.apache.gravitino.catalog.doris.DorisTablePropertiesMetadata.LIGHT_SCHEMA_CHANGE;
 import static org.apache.gravitino.catalog.doris.DorisTablePropertiesMetadata.REPLICATION_ALLOCATION;
 import static org.apache.gravitino.catalog.doris.DorisTablePropertiesMetadata.REPLICATION_FACTOR;
 import static org.apache.gravitino.integration.test.util.ITUtils.assertPartition;
@@ -720,6 +721,43 @@ public class CatalogDorisIT extends BaseIT {
             () ->
                 assertEquals(
                     "true", tableCatalog.loadTable(tableIdentifier).properties().get("in_memory")));
+  }
+
+  @Test
+  void testRenameColumnWithLightSchemaChange() {
+    NameIdentifier tableIdentifier =
+        NameIdentifier.of(schemaName, GravitinoITUtils.genRandomName("doris_rename_column"));
+    TableCatalog tableCatalog = catalog.asTableCatalog();
+    tableCatalog.createTable(
+        tableIdentifier,
+        createColumns(),
+        table_comment,
+        ImmutableMap.of(LIGHT_SCHEMA_CHANGE, "true"),
+        Transforms.EMPTY_TRANSFORM,
+        createDistribution(),
+        null);
+
+    tableCatalog.alterTable(
+        tableIdentifier, TableChange.renameColumn(new String[] {DORIS_COL_NAME2}, "renamed_once"));
+    Awaitility.await()
+        .atMost(MAX_WAIT_IN_SECONDS, TimeUnit.SECONDS)
+        .pollInterval(WAIT_INTERVAL_IN_SECONDS, TimeUnit.SECONDS)
+        .untilAsserted(
+            () ->
+                assertTrue(
+                    Arrays.stream(tableCatalog.loadTable(tableIdentifier).columns())
+                        .anyMatch(column -> column.name().equals("renamed_once"))));
+
+    tableCatalog.alterTable(
+        tableIdentifier, TableChange.renameColumn(new String[] {"renamed_once"}, "renamed_twice"));
+    Awaitility.await()
+        .atMost(MAX_WAIT_IN_SECONDS, TimeUnit.SECONDS)
+        .pollInterval(WAIT_INTERVAL_IN_SECONDS, TimeUnit.SECONDS)
+        .untilAsserted(
+            () ->
+                assertTrue(
+                    Arrays.stream(tableCatalog.loadTable(tableIdentifier).columns())
+                        .anyMatch(column -> column.name().equals("renamed_twice"))));
   }
 
   @Test
