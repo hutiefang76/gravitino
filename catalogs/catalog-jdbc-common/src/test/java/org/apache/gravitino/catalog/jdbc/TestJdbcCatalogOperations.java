@@ -20,6 +20,7 @@ package org.apache.gravitino.catalog.jdbc;
 
 import com.google.common.collect.Maps;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import javax.sql.DataSource;
@@ -34,6 +35,14 @@ import org.apache.gravitino.catalog.jdbc.operation.SqliteTableOperations;
 import org.apache.gravitino.catalog.jdbc.utils.DataSourceUtils;
 import org.apache.gravitino.exceptions.ConnectionFailedException;
 import org.apache.gravitino.exceptions.GravitinoRuntimeException;
+import org.apache.gravitino.meta.AuditInfo;
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Configuration;
+import org.apache.logging.log4j.core.config.LoggerConfig;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -92,5 +101,56 @@ public class TestJdbcCatalogOperations {
             new SqliteColumnDefaultValueConverter());
 
     Assertions.assertDoesNotThrow(catalogOperations::close);
+  }
+
+  @Test
+  public void testMissingSchemaIdentifierIsDebugWithoutComment() {
+    String comment = "user-provided schema comment";
+    SqliteDatabaseOperations databaseOperations =
+        new SqliteDatabaseOperations("/unused") {
+          @Override
+          public JdbcSchema load(String databaseName) {
+            return JdbcSchema.builder()
+                .withName(databaseName)
+                .withComment(comment)
+                .withAuditInfo(AuditInfo.EMPTY)
+                .build();
+          }
+        };
+
+    LoggerContext context =
+        (LoggerContext) LogManager.getContext(JdbcCatalogOperations.class.getClassLoader(), false);
+    Configuration configuration = context.getConfiguration();
+    List<LogEvent> events = new ArrayList<>();
+    AbstractAppender appender =
+        new AbstractAppender("jdbcSchemaLogCapture", null, null, true, null) {
+          @Override
+          public void append(LogEvent event) {
+            events.add(event.toImmutable());
+          }
+        };
+    appender.start();
+    LoggerConfig logger =
+        new LoggerConfig(JdbcCatalogOperations.class.getName(), Level.DEBUG, false);
+    logger.addAppender(appender, Level.DEBUG, null);
+    configuration.addLogger(JdbcCatalogOperations.class.getName(), logger);
+    context.updateLoggers();
+    try (JdbcCatalogOperations catalogOperations =
+        new JdbcCatalogOperations(
+            new SqliteExceptionConverter(),
+            new SqliteTypeConverter(),
+            databaseOperations,
+            new SqliteTableOperations(),
+            new SqliteColumnDefaultValueConverter())) {
+      JdbcSchema schema = catalogOperations.loadSchema(NameIdentifier.of("schema"));
+      Assertions.assertSame(comment, schema.comment());
+      Assertions.assertEquals(1, events.size());
+      Assertions.assertEquals(Level.DEBUG, events.get(0).getLevel());
+      Assertions.assertFalse(events.get(0).getMessage().getFormattedMessage().contains(comment));
+    } finally {
+      configuration.removeLogger(JdbcCatalogOperations.class.getName());
+      context.updateLoggers();
+      appender.stop();
+    }
   }
 }
