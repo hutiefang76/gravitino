@@ -35,6 +35,7 @@ import static org.apache.gravitino.catalog.clickhouse.ClickHouseTablePropertiesM
 import static org.apache.gravitino.catalog.clickhouse.operations.ClickHouseClusterUtils.escapeSingleQuotes;
 import static org.apache.gravitino.rel.Column.DEFAULT_VALUE_NOT_SET;
 
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import java.math.BigInteger;
@@ -152,6 +153,15 @@ public class ClickHouseTableOperations extends JdbcTableOperations {
   private static final String LEGACY_SECONDARY_INDEX_QUERY =
       "SELECT name, type, expr, granularity FROM system.data_skipping_indices "
           + "WHERE database = ? AND table = ? ORDER BY name";
+  private static final String PROJECTION_COLUMNS_QUERY =
+      "SELECT name FROM system.columns WHERE database = 'system' "
+          + "AND table = 'projections' AND name IN ('name', 'settings')";
+  private static final String PROJECTIONS_QUERY =
+      "SELECT name, type, query FROM system.projections "
+          + "WHERE database = ? AND table = ? ORDER BY name";
+  private static final String PROJECTIONS_WITH_SETTINGS_QUERY =
+      "SELECT name, type, query, toJSONString(settings) AS settings_json "
+          + "FROM system.projections WHERE database = ? AND table = ? ORDER BY name";
 
   @Override
   public void create(
@@ -346,6 +356,11 @@ public class ClickHouseTableOperations extends JdbcTableOperations {
 
     Map<String, String> notNullProperties =
         MapUtils.isNotEmpty(properties) ? properties : Collections.emptyMap();
+    String projectionClauses =
+        ClickHouseProjectionMetadata.render(notNullProperties.get(TableConstants.PROJECTIONS));
+    Preconditions.checkArgument(
+        projectionClauses.isEmpty() || columns.length > 0,
+        "ClickHouse projections require explicit table columns");
 
     validateNoAutoIncrementColumns(columns);
 
@@ -359,12 +374,17 @@ public class ClickHouseTableOperations extends JdbcTableOperations {
       // Index definition
       appendIndexesSql(indexes, sqlBuilder);
 
+      sqlBuilder.append(projectionClauses);
+
       sqlBuilder.append("\n)");
     }
 
     // Extract engine from properties
     ClickHouseTablePropertiesMetadata.ENGINE engine =
         appendTableEngine(notNullProperties, sqlBuilder, columns);
+    Preconditions.checkArgument(
+        projectionClauses.isEmpty() || engine.acceptPartition(),
+        "ClickHouse projections require a MergeTree-family engine");
 
     appendOrderBy(sortOrders, sqlBuilder, engine);
 
@@ -906,6 +926,10 @@ public class ClickHouseTableOperations extends JdbcTableOperations {
       // Expose ClickHouse's canonical native partition expression. Unpartitioned tables expose an
       // empty string so that the property key is always present.
       merged.put(TableConstants.PARTITION_KEY, StringUtils.defaultString(partitionKey));
+      String projectionProperty = getProjectionProperty(connection, databaseName, tableName);
+      if (StringUtils.isNotEmpty(projectionProperty)) {
+        merged.put(TableConstants.PROJECTIONS, projectionProperty);
+      }
       jdbcTableBuilder.withProperties(Collections.unmodifiableMap(merged));
 
       correctJdbcTableFields(connection, databaseName, tableName, jdbcTableBuilder);
@@ -914,6 +938,44 @@ public class ClickHouseTableOperations extends JdbcTableOperations {
     } catch (SQLException e) {
       throw exceptionMapper.toGravitinoException(e);
     }
+  }
+
+  @VisibleForTesting
+  String getProjectionProperty(Connection connection, String databaseName, String tableName)
+      throws SQLException {
+    boolean hasProjections = false;
+    boolean hasSettings = false;
+    // 24.8 does not provide system.projections. The settings column was added after the table,
+    // so inspect its actual columns instead of assuming a particular ClickHouse version.
+    try (PreparedStatement statement = connection.prepareStatement(PROJECTION_COLUMNS_QUERY);
+        ResultSet resultSet = statement.executeQuery()) {
+      while (resultSet.next()) {
+        String column = resultSet.getString("name");
+        hasProjections |= "name".equals(column);
+        hasSettings |= "settings".equals(column);
+      }
+    }
+    if (!hasProjections) {
+      return "";
+    }
+
+    String sql = hasSettings ? PROJECTIONS_WITH_SETTINGS_QUERY : PROJECTIONS_QUERY;
+    ArrayNode projections = ClickHouseProjectionMetadata.newArray();
+    try (PreparedStatement statement = connection.prepareStatement(sql)) {
+      statement.setString(1, databaseName);
+      statement.setString(2, tableName);
+      try (ResultSet resultSet = statement.executeQuery()) {
+        while (resultSet.next()) {
+          ClickHouseProjectionMetadata.add(
+              projections,
+              resultSet.getString("name"),
+              resultSet.getString("type"),
+              resultSet.getString("query"),
+              hasSettings ? resultSet.getString("settings_json") : "{}");
+        }
+      }
+    }
+    return projections.isEmpty() ? "" : ClickHouseProjectionMetadata.encode(projections);
   }
 
   @VisibleForTesting

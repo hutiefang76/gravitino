@@ -242,12 +242,28 @@ If you need Gravitino to manage an existing cluster database or table, recreate 
 | `cluster-sharding-key`    | Sharding key for `Distributed` engine (expression allowed; referenced columns must be non-null integral)                                                      | (none)        | No\*\*   | No       | No        |
 | `settings.<name>`         | ClickHouse engine setting forwarded as `SETTINGS <name>=<scalar-literal>`; supports settings-only set or remove requests after creation                       | (none)        | No       | No       | No        |
 | `partition-key`           | ClickHouse's canonical native partition expression (from `system.tables.partition_key`). Read-only; always present on load, empty string means unpartitioned. | `""`          | No       | Yes      | Yes       |
+| `projections`             | JSON array of projection definitions (`name`, `type`, `query`, `settings`) restored from `system.projections` and used when creating a table. Requires ClickHouse 24.9 or later. | `""` | No | No | Yes |
 
 \* Required when `on-cluster=true` or `engine=Distributed`.  
 \*\* Required when `engine=Distributed`.
 \*\*\* Required when `engine=GraphiteMergeTree`.
 
 The `engine_parameters` property applies to `ReplacingMergeTree`, `SummingMergeTree`, `CollapsingMergeTree`, and `VersionedCollapsingMergeTree`. Values are restored when loading these tables and must be provided without outer parentheses. For `GraphiteMergeTree`, use `graphite.config` instead.
+
+Projection definitions are kept in the `projections` property rather than in base columns, sort
+orders, or indexes. For example, a MergeTree table can be created with:
+
+```json
+"projections": "[{\"name\":\"by_date\",\"type\":\"Normal\",\"query\":\"SELECT event_date ORDER BY event_date\",\"settings\":{}}]"
+```
+
+Loading a table on ClickHouse 24.9 or later reads its projection definitions from
+`system.projections`. Versions without the `settings` column return an empty settings map. Loading
+on ClickHouse 24.8 does not expose projections because that version has no `system.projections`
+table; no SQL-parsing fallback is provided. The property recreates projection definitions when a
+new table is created, including definitions added by native `ALTER TABLE ... ADD PROJECTION`.
+It does not copy table data or materialize projections for existing parts. Gravitino does not
+provide projection `ALTER TABLE` operations.
 
 ### Table Indexes
 

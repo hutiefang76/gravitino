@@ -58,6 +58,9 @@ public class ClickHouseConstants {
      * structured Transform (identity, year, month, or day).
      */
     public static final String PARTITION_KEY = "partition-key";
+
+    /** JSON array of ClickHouse projection names, types, queries, and settings. */
+    public static final String PROJECTIONS = "projections";
   }
 
   public static final class IndexConstants {

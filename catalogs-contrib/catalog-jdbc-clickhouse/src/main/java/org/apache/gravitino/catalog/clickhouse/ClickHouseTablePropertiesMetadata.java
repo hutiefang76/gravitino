@@ -126,6 +126,15 @@ public class ClickHouseTablePropertiesMetadata extends JdbcTablePropertiesMetada
           false,
           true);
 
+  /** Projection definitions are supplied on CREATE and restored from system.projections on load. */
+  public static final PropertyEntry<String> PROJECTIONS_PROPERTY_ENTRY =
+      stringOptionalPropertyEntry(
+          TableConstants.PROJECTIONS,
+          "JSON array of ClickHouse projection definitions",
+          true,
+          "",
+          false);
+
   private static final Map<String, PropertyEntry<?>> PROPERTIES_METADATA =
       createPropertiesMetadata();
 
@@ -154,6 +163,7 @@ public class ClickHouseTablePropertiesMetadata extends JdbcTablePropertiesMetada
     map.put(CLUSTER_SHARDING_KEY_PROPERTY_ENTRY.getName(), CLUSTER_SHARDING_KEY_PROPERTY_ENTRY);
     map.put(ENGINE_PARAMETERS_PROPERTY_ENTRY.getName(), ENGINE_PARAMETERS_PROPERTY_ENTRY);
     map.put(PARTITION_KEY_PROPERTY_ENTRY.getName(), PARTITION_KEY_PROPERTY_ENTRY);
+    map.put(PROJECTIONS_PROPERTY_ENTRY.getName(), PROJECTIONS_PROPERTY_ENTRY);
 
     return Collections.unmodifiableMap(map);
   }
