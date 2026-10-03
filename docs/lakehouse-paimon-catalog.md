@@ -158,7 +158,7 @@ Other non-credential secrets (secret-manager URNs, declared `hidden` properties,
 
 - Doesn't support specify location and store any schema properties when createSchema for FilesystemCatalog.
 - Doesn't return any schema properties when loadSchema for FilesystemCatalog.
-- Doesn't support store schema comment for FilesystemCatalog.
+- Doesn't support storing schema comments for any catalog backend, including filesystem and JDBC.
 
 ### Schema Operations
 
