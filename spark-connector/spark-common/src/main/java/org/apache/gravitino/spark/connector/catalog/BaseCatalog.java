@@ -172,7 +172,7 @@ public abstract class BaseCatalog implements TableCatalog, SupportsNamespaces, F
   @Override
   public void initialize(String name, CaseInsensitiveStringMap options) {
     this.catalogName = name;
-    this.gravitinoCatalogClient = gravitinoCatalogManager.getGravitinoCatalogInfo(name);
+    this.gravitinoCatalogClient = gravitinoCatalogManager.getGravitinoCatalogForSpark(name);
     String provider = gravitinoCatalogClient.provider();
     Preconditions.checkArgument(
         StringUtils.isNotBlank(provider), name + " catalog provider is empty");

@@ -26,6 +26,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -60,6 +61,9 @@ public class GravitinoCatalogManager {
   private final Function<GravitinoIdentity, GravitinoClient> clientBuilder;
   private final Cache<GravitinoIdentity, GravitinoClient> clients;
   private final Cache<String, Catalog> gravitinoCatalogs;
+  // Spark catalogs and the tables they return may retain their REST client for the driver lifetime.
+  // These clients are owned separately from the bounded cache of transient metadata lookups.
+  private final Map<GravitinoIdentity, GravitinoClient> sparkCatalogClients = new HashMap<>();
   private volatile Map<String, Catalog> applicationCatalogs = ImmutableMap.of();
 
   // Resolved lazily on first access and cached for the life of this manager; Spark catalogs are
@@ -140,12 +144,14 @@ public class GravitinoCatalogManager {
     return gravitinoCatalogManager;
   }
 
-  public void close() {
+  public synchronized void close() {
     Preconditions.checkState(!isClosed, "Gravitino Catalog is already closed");
     isClosed = true;
     // Caffeine dispatches the removal listener asynchronously, so shutdown closes explicitly.
     clients.asMap().forEach(GravitinoCatalogManager::closeClient);
     clients.invalidateAll();
+    sparkCatalogClients.forEach(GravitinoCatalogManager::closeClient);
+    sparkCatalogClients.clear();
     gravitinoCatalogs.invalidateAll();
     applicationCatalogs = ImmutableMap.of();
     gravitinoCatalogManager = null;
@@ -158,6 +164,31 @@ public class GravitinoCatalogManager {
     } catch (Exception e) {
       LOG.error(String.format("Load catalog %s failed", name), e);
       throw new RuntimeException(e);
+    }
+  }
+
+  /**
+   * Loads a catalog using a client retained until driver shutdown. Spark has no catalog close
+   * callback, and catalog and table objects keep using the transport after initialization. Catalogs
+   * initialized for the same identity share a client independently of transient cache expiration
+   * and capacity eviction.
+   */
+  synchronized Catalog getGravitinoCatalogForSpark(String name) {
+    Preconditions.checkState(!isClosed, "GravitinoCatalogManager is already closed");
+    GravitinoIdentity identity = currentIdentity();
+    GravitinoClient client = sparkCatalogClients.get(identity);
+    if (client != null) {
+      return loadCatalog(client, identity, name);
+    }
+
+    client = clientBuilder.apply(identity);
+    try {
+      Catalog catalog = loadCatalog(client, identity, name);
+      sparkCatalogClients.put(identity, client);
+      return catalog;
+    } catch (RuntimeException | Error e) {
+      closeClient(identity, client);
+      throw e;
     }
   }
 
@@ -238,7 +269,12 @@ public class GravitinoCatalogManager {
   }
 
   private Catalog loadCatalog(GravitinoIdentity identity, String catalogName) {
-    Catalog catalog = getClient(identity).loadCatalog(catalogName);
+    return loadCatalog(getClient(identity), identity, catalogName);
+  }
+
+  private Catalog loadCatalog(
+      GravitinoClient client, GravitinoIdentity identity, String catalogName) {
+    Catalog catalog = client.loadCatalog(catalogName);
     Preconditions.checkArgument(
         Catalog.Type.RELATIONAL.equals(catalog.type()), "Only support relational catalog");
     LOG.info("Load catalog {} from Gravitino successfully for {}.", catalogName, identity);
